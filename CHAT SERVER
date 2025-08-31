@@ -1,0 +1,177 @@
+import java.io.*;
+import java.net.*;
+import java.util.*;
+import java.util.concurrent.*;
+
+public class ChatServer {
+    private final int port;
+    private final Set<ClientHandler> clients = ConcurrentHashMap.newKeySet();
+    private final ExecutorService pool = Executors.newFixedThreadPool(50);
+
+    public ChatServer(int port) {
+        this.port = port;
+    }
+
+    public void start() throws IOException {
+        try (ServerSocket serverSocket = new ServerSocket(port)) {
+            System.out.println("Chat server started on port " + port);
+            while (true) {
+                Socket clientSocket = serverSocket.accept();
+                ClientHandler handler = new ClientHandler(clientSocket, this);
+                clients.add(handler);
+                pool.execute(handler);
+            }
+        } finally {
+            shutdown();
+        }
+    }
+
+    public void broadcast(String message, ClientHandler from) {
+        for (ClientHandler ch : clients) {
+            if (ch != from) {
+                ch.sendMessage(message);
+            }
+        }
+    }
+
+    public void removeClient(ClientHandler clientHandler) {
+        clients.remove(clientHandler);
+    }
+
+    public void shutdown() {
+        try {
+            pool.shutdownNow();
+        } catch (Exception e) {
+            
+        }
+    }
+
+    public static void main(String[] args) throws IOException {
+        int port = 5000;
+        if (args.length > 0) {
+            try { port = Integer.parseInt(args[0]); } catch (NumberFormatException ignored) {}
+        }
+
+        ChatServer server = new ChatServer(port);
+        server.start();
+    }
+}
+
+class ClientHandler implements Runnable {
+    private final Socket socket;
+    private final ChatServer server;
+    private String name = "Anonymous";
+    private BufferedReader in;
+    private PrintWriter out;
+
+    public ClientHandler(Socket socket, ChatServer server) {
+        this.socket = socket;
+        this.server = server;
+    }
+
+    @Override
+    public void run() {
+        try {
+            in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+            out = new PrintWriter(socket.getOutputStream(), true);
+
+            out.println("Welcome! Please enter your display name:");
+            String line = in.readLine();
+            if (line != null && !line.trim().isEmpty()) {
+                name = line.trim();
+            }
+            server.broadcast(name + " has joined the chat.", this);
+            out.println("Hello " + name + "! You can start typing messages. Type /quit to exit.");
+
+            String message;
+            while ((message = in.readLine()) != null) {
+                if (message.equalsIgnoreCase("/quit")) {
+                    break;
+                }
+                String formatted = String.format("[%s] %s", name, message);
+                System.out.println("Received: " + formatted);
+                server.broadcast(formatted, this);
+            }
+
+        } catch (IOException e) {
+            System.err.println("Connection error with " + name + ": " + e.getMessage());
+        } finally {
+            close();
+        }
+    }
+
+    public void sendMessage(String message) {
+        if (out != null) {
+            out.println(message);
+        }
+    }
+
+    private void close() {
+        try {
+            server.broadcast(name + " has left the chat.", this);
+            server.removeClient(this);
+            if (socket != null && !socket.isClosed())
+                socket.close();
+        } catch (IOException ignored) {
+        }
+    }
+}
+
+import java.io.*;
+import java.net.*;
+
+public class ChatClient {
+    private final String host;
+    private final int port;
+
+    public ChatClient(String host, int port) {
+        this.host = host;
+        this.port = port;
+    }
+
+    public void start() {
+        try (Socket socket = new Socket(host, port);
+                BufferedReader serverIn = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+                PrintWriter serverOut = new PrintWriter(socket.getOutputStream(), true);
+                BufferedReader userIn = new BufferedReader(new InputStreamReader(System.in))) {
+
+            Thread listener = new Thread(() -> {
+                String serverMsg;
+                try {
+                    while ((serverMsg = serverIn.readLine()) != null) {
+                        System.out.println(serverMsg);
+                    }
+                } catch (IOException e) {
+                    System.err.println("Disconnected from server.");
+                }
+            });
+            listener.setDaemon(true);
+            listener.start();
+
+            String userLine;
+            while ((userLine = userIn.readLine()) != null) {
+                serverOut.println(userLine);
+                if (userLine.equalsIgnoreCase("/quit"))
+                    break;
+            }
+
+        } catch (IOException e) {
+            System.err.println("Unable to connect to server: " + e.getMessage());
+        }
+    }
+
+    public static void main(String[] args) {
+        String host = "localhost";
+        int port = 5000;
+        if (args.length > 0)
+            host = args[0];
+        if (args.length > 1) {
+            try {
+                port = Integer.parseInt(args[1]);
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        ChatClient client = new ChatClient(host, port);
+        client.start();
+    }
+}
